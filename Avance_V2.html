@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>🦁 Lionheart v16.0 - Scanline Aligner</title>
+<style>
+    body { font-family: 'Segoe UI', sans-serif; background: #0a0a0a; color: #e0e0e0; padding: 20px; margin: 0; }
+    h1 { color: #f39c12; text-align: center; text-shadow: 0 0 10px rgba(243,156,18,0.3); }
+    .panel { background: #151515; padding: 20px; border-radius: 10px; margin-bottom: 20px; border: 1px solid #333; box-shadow: 0 4px 15px rgba(0,0,0,0.8); }
+    #drop { border: 3px dashed #f39c12; padding: 40px; text-align: center; cursor: pointer; border-radius: 10px; font-size: 1.2em; transition: 0.3s; }
+    #drop:hover, #drop.dragover { background: #222; border-color: #fff; }
+    canvas { border: 2px solid #444; background: repeating-conic-gradient(#1a1a1a 0% 25%, #222 0% 50%) 50% / 20px 20px; image-rendering: pixelated; max-width: 100%; display: block; margin: 20px auto; box-shadow: 0 0 30px rgba(243, 156, 18, 0.2); }
+    .controls { display: flex; flex-wrap: wrap; gap: 20px; align-items: center; justify-content: center; margin-top: 15px; }
+    .control-group { display: flex; flex-direction: column; align-items: center; background: #1e1e1e; padding: 15px; border-radius: 8px; border: 1px solid #333; min-width: 200px; }
+    label { font-size: 0.9em; color: #ccc; margin-bottom: 8px; font-weight: bold; }
+    select { padding: 8px; background: #000; color: #fff; border: 1px solid #555; border-radius: 4px; width: 100%; }
+    button { padding: 12px 25px; background: #f39c12; border: none; color: #000; font-weight: bold; cursor: pointer; border-radius: 5px; font-size: 1em; margin-top: 15px; transition: 0.2s; }
+    button:hover { background: #e67e22; color: #fff; transform: translateY(-2px); }
+    #status { text-align: center; font-weight: bold; color: #2ecc71; min-height: 20px; margin-top: 10px; font-family: monospace; }
+    .checkbox-group { display: flex; align-items: center; gap: 8px; font-size: 0.9em; margin: 5px 0; }
+    .highlight { color: #f39c12; font-weight: bold; }
+    .info-box { background: #1a1a1a; padding: 15px; border-radius: 5px; font-size: 0.9em; color: #aaa; margin-bottom: 15px; border-left: 4px solid #f39c12; line-height: 1.5;}
+</style>
+</head>
+<body>
+
+<h1>🦁 Lionheart v16.0 - Scanline Aligner</h1>
+<div class="info-box">
+    <strong>✅ Misterio Resuelto:</strong> El archivo tiene un header de <strong>650x650px</strong>. El marcador de fin de línea real es <code>FF FF FF [XX] 7F</code>.<br>
+    Las versiones anteriores "cortaban" la imagen porque no usaban el ancho real de 650px, causando que los píxeles sobrantes se "doblaran" hacia la siguiente línea (wrapping). Esta versión usa el ancho exacto del header.
+</div>
+
+<div class="panel">
+    <input type="file" id="file" style="display:none">
+    <div id="drop">📂 Arrastra tu archivo .FRM16 / .MDL16 aquí</div>
+    <div id="status">Esperando archivo...</div>
+</div>
+
+<div class="panel" id="controls-panel" style="display:none;">
+    <div class="controls">
+        <div class="control-group">
+            <label>Interpretación del Byte XX</label>
+            <select id="xx-mode">
+                <option value="ignore">Ignorar XX (Alinear todo a la izquierda)</option>
+                <option value="left" selected>XX es Padding Izquierdo (X-Offset)</option>
+                <option value="right">XX es Padding Derecho</option>
+            </select>
+            <small style="color:#888; margin-top:5px;">(Si la imagen está pegada a la izquierda, usa "Padding Izquierdo")</small>
+        </div>
+
+        <div class="control-group">
+            <label>Filtros de Transparencia</label>
+            <div class="checkbox-group">
+                <input type="checkbox" id="chk-black" checked>
+                <label for="chk-black">Negro Puro (0x0000)</label>
+            </div>
+            <div class="checkbox-group">
+                <input type="checkbox" id="chk-white" checked>
+                <label for="chk-white">Blanco Puro (0xFFFF)</label>
+            </div>
+            <div class="checkbox-group">
+                <input type="checkbox" id="chk-flip">
+                <label for="chk-flip">Voltear Vertical</label>
+            </div>
+        </div>
+    </div>
+    <div style="text-align:center;">
+        <button id="btn-download">💾 Descargar PNG Final</button>
+    </div>
+</div>
+
+<canvas id="canvas" width="1" height="1"></canvas>
+
+<script>
+let fileData = null;
+const dropZone = document.getElementById('drop');
+const fileInput = document.getElementById('file');
+const status = document.getElementById('status');
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+const controlsPanel = document.getElementById('controls-panel');
+
+const xxMode = document.getElementById('xx-mode');
+const chkBlack = document.getElementById('chk-black');
+const chkWhite = document.getElementById('chk-white');
+const chkFlip = document.getElementById('chk-flip');
+const btnDownload = document.getElementById('btn-download');
+
+dropZone.onclick = () => fileInput.click();
+dropZone.ondragover = e => { e.preventDefault(); dropZone.classList.add('dragover'); };
+dropZone.ondragleave = () => dropZone.classList.remove('dragover');
+dropZone.ondrop = e => {
+    e.preventDefault();
+    dropZone.classList.remove('dragover');
+    if(e.dataTransfer.files.length > 0) loadFile(e.dataTransfer.files[0]);
+};
+fileInput.onchange = e => { if(e.target.files.length > 0) loadFile(e.target.files[0]); };
+
+function loadFile(file) {
+    const r = new FileReader();
+    r.onload = e => {
+        fileData = new Uint8Array(e.target.result);
+        status.innerText = `✅ ${file.name} (${fileData.length} bytes) - Leyendo Header...`;
+        controlsPanel.style.display = 'block';
+        render();
+    };
+    r.readAsArrayBuffer(file);
+}
+
+function render() {
+    if (!fileData) return;
+
+    const mode = xxMode.value;
+    const flip = chkFlip.checked;
+
+    // 1. LEER HEADER (Offset 3 = Ancho, Offset 5 = Alto)
+    let w = 650; // Por defecto
+    let h = 650;
+    let startOffset = 0;
+
+    if (fileData[0] === 0x01 && fileData[1] === 0x32 && fileData[2] === 0x10) {
+        w = fileData[3] | (fileData[4] << 8);
+        h = fileData[5] | (fileData[6] << 8);
+        startOffset = 44; // El header mide 44 bytes
+    }
+
+    if (w <= 0 || w > 2000) w = 650; // Fallback de seguridad
+
+    status.innerText = `📐 Dimensiones del Header: ${w}x${h} | Buscando marcadores FF FF FF XX 7F...`;
+
+    canvas.width = w;
+    // Usamos una altura segura, luego recortaremos
+    const maxH = 2000; 
+    canvas.height = maxH;
+    
+    const imgData = ctx.createImageData(w, maxH);
+    let x = 0, y = 0;
+    let maxY = 0;
+    let nextLineXOffset = 0;
+
+    // 2. ALGORITMO DE SCANLINES CON MARCADOR DE 5 BYTES
+    for (let i = startOffset; i < fileData.length - 5; ) {
+        // Comprobar marcador de fin de línea: FF FF FF [XX] 7F
+        if (fileData[i] === 0xFF && fileData[i+1] === 0xFF && fileData[i+2] === 0xFF && fileData[i+4] === 0x7F) {
+            let xx = fileData[i+3];
+            
+            // Salto de línea
+            y++;
+            if (y > maxY) maxY = y;
+            
+            // Calcular X inicial para la SIGUIENTE línea basado en el modo
+            if (mode === 'left') {
+                nextLineXOffset = xx; // XX es el padding izquierdo de la próxima línea
+            } else if (mode === 'right') {
+                nextLineXOffset = 0; // Si es padding derecho, la siguiente línea empieza en 0
+            } else {
+                nextLineXOffset = 0;
+            }
+            
+            x = nextLineXOffset;
+            i += 5; // Saltar los 5 bytes del marcador
+            continue;
+        }
+
+        // Leer Píxel Normal (16 bits Little Endian)
+        if (i + 1 < fileData.length) {
+            const val = fileData[i] | (fileData[i+1] << 8);
+            
+            if (y < maxH && x < w) {
+                let r = ((val >> 11) & 31) * 255 / 31;
+                let g = ((val >> 5) & 63) * 255 / 63;
+                let b = (val & 31) * 255 / 31;
+                
+                let drawY = flip ? (maxH - 1 - y) : y;
+                let pIdx = (drawY * w + x) * 4;
+                
+                imgData.data[pIdx] = r;
+                imgData.data[pIdx+1] = g;
+                imgData.data[pIdx+2] = b;
+                imgData.data[pIdx+3] = 255;
+                
+                if (chkBlack.checked && val === 0x0000) imgData.data[pIdx+3] = 0;
+                if (chkWhite.checked && val === 0xFFFF) imgData.data[pIdx+3] = 0;
+            }
+            x++;
+            i += 2;
+        } else {
+            break;
+        }
+    }
+    
+    // Recortar canvas a la altura real
+    canvas.height = maxY + 1;
+    const finalImgData = ctx.createImageData(w, maxY + 1);
+    for(let i=0; i<finalImgData.data.length; i++) finalImgData.data[i] = imgData.data[i];
+    ctx.putImageData(finalImgData, 0, 0);
+    
+    status.innerText += ` | ✅ Renderizado completado (${w}x${maxY + 1}px)`;
+}
+
+xxMode.onchange = render;
+chkBlack.onchange = render;
+chkWhite.onchange = render;
+chkFlip.onchange = render;
+
+btnDownload.onclick = () => {
+    const a = document.createElement('a');
+    a.href = canvas.toDataURL('image/png');
+    a.download = `lionheart_aligned_${canvas.width}x${canvas.height}.png`;
+    a.click();
+};
+</script>
+</body>
+</html>

@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>🦁 Lionheart v9.0 - Scanline Detector</title>
+<style>
+    body { font-family: 'Segoe UI', sans-serif; background: #0a0a0a; color: #e0e0e0; padding: 20px; margin: 0; }
+    h1 { color: #f39c12; text-align: center; }
+    .panel { background: #151515; padding: 20px; border-radius: 10px; margin-bottom: 20px; border: 1px solid #333; }
+    #drop { border: 3px dashed #f39c12; padding: 40px; text-align: center; cursor: pointer; border-radius: 10px; font-size: 1.2em; }
+    #drop:hover { background: #222; }
+    canvas { border: 2px solid #444; background: repeating-conic-gradient(#1a1a1a 0% 25%, #222 0% 50%) 50% / 20px 20px; image-rendering: pixelated; max-width: 100%; display: block; margin: 10px auto; }
+    .controls { display: flex; flex-wrap: wrap; gap: 15px; align-items: center; justify-content: center; }
+    .control-group { display: flex; flex-direction: column; align-items: center; background: #1e1e1e; padding: 15px; border-radius: 8px; border: 1px solid #333; min-width: 180px; }
+    label { font-size: 0.9em; color: #ccc; margin-bottom: 8px; font-weight: bold; }
+    input[type=range] { width: 100%; accent-color: #f39c12; }
+    input[type=number] { width: 70px; padding: 5px; background: #000; color: #fff; border: 1px solid #555; text-align: center; }
+    button { padding: 10px 20px; background: #f39c12; border: none; color: #000; font-weight: bold; cursor: pointer; border-radius: 5px; margin: 5px; }
+    button:hover { background: #e67e22; color: #fff; }
+    #status { text-align: center; font-weight: bold; color: #2ecc71; min-height: 20px; }
+    #info { background: #1a1a1a; padding: 15px; border-radius: 5px; margin: 10px 0; font-family: monospace; font-size: 0.85em; max-height: 300px; overflow-y: auto; }
+    .highlight { color: #f39c12; font-weight: bold; }
+</style>
+</head>
+<body>
+
+<h1>🦁 Lionheart v9.0 - Scanline Detector</h1>
+
+<div class="panel">
+    <input type="file" id="file" style="display:none">
+    <div id="drop">📂 Arrastra tu archivo .FRM16 aquí</div>
+    <div id="status">Esperando archivo...</div>
+</div>
+
+<div class="panel" id="controls-panel" style="display:none;">
+    <div class="controls">
+        <div class="control-group">
+            <label>Ancho de Línea: <span id="width-val" class="highlight">90</span> bytes</label>
+            <input type="range" id="width-slider" min="40" max="300" value="90" step="2">
+            <input type="number" id="width-input" value="90" min="10" max="1000" step="2">
+            <small style="color:#888;">Ajusta hasta que la imagen se forme</small>
+        </div>
+
+        <div class="control-group">
+            <label>Offset Inicial: <span id="offset-val" class="highlight">6</span></label>
+            <input type="range" id="offset-slider" min="0" max="100" value="6" step="2">
+            <input type="number" id="offset-input" value="6" min="0" step="2">
+        </div>
+
+        <div class="control-group">
+            <label>Opciones</label>
+            <div><input type="checkbox" id="chk-black" checked> <label for="chk-black">Negro transparente</label></div>
+            <div><input type="checkbox" id="chk-white" checked> <label for="chk-white">Blanco transparente</label></div>
+            <div><input type="checkbox" id="chk-flip"> <label for="chk-flip">Voltear vertical</label></div>
+        </div>
+    </div>
+    <div style="text-align:center;">
+        <button id="btn-download">💾 Descargar PNG</button>
+        <button id="btn-info">ℹ️ Ver Líneas Detectadas</button>
+    </div>
+</div>
+
+<canvas id="canvas" width="1" height="1"></canvas>
+<div id="info" style="display:none;"></div>
+
+<script>
+let fileData = null;
+let scanlines = [];
+
+const dropZone = document.getElementById('drop');
+const fileInput = document.getElementById('file');
+const status = document.getElementById('status');
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+const controlsPanel = document.getElementById('controls-panel');
+const infoDiv = document.getElementById('info');
+
+const widthSlider = document.getElementById('width-slider');
+const widthInput = document.getElementById('width-input');
+const widthVal = document.getElementById('width-val');
+const offsetSlider = document.getElementById('offset-slider');
+const offsetInput = document.getElementById('offset-input');
+const offsetVal = document.getElementById('offset-val');
+
+const chkBlack = document.getElementById('chk-black');
+const chkWhite = document.getElementById('chk-white');
+const chkFlip = document.getElementById('chk-flip');
+const btnDownload = document.getElementById('btn-download');
+const btnInfo = document.getElementById('btn-info');
+
+dropZone.onclick = () => fileInput.click();
+dropZone.ondragover = e => { e.preventDefault(); };
+dropZone.ondrop = e => {
+    e.preventDefault();
+    if(e.dataTransfer.files.length > 0) loadFile(e.dataTransfer.files[0]);
+};
+fileInput.onchange = e => { if(e.target.files.length > 0) loadFile(e.target.files[0]); };
+
+function loadFile(file) {
+    const r = new FileReader();
+    r.onload = e => {
+        fileData = new Uint8Array(e.target.result);
+        status.innerText = `✅ ${file.name} (${fileData.length} bytes)`;
+        controlsPanel.style.display = 'block';
+        detectScanlines();
+        render();
+    };
+    r.readAsArrayBuffer(file);
+}
+
+function detectScanlines() {
+    scanlines = [];
+    const marker = [0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]; // FF XX FF FF FF FF FF (7 bytes)
+    
+    // Buscar patrón: FF XX FF FF FF FF FF
+    for (let i = 0; i < fileData.length - 7; i++) {
+        if (fileData[i] === 0xFF && 
+            fileData[i+2] === 0xFF && 
+            fileData[i+3] === 0xFF && 
+            fileData[i+4] === 0xFF && 
+            fileData[i+5] === 0xFF && 
+            fileData[i+6] === 0xFF) {
+            
+            scanlines.push({
+                markerOffset: i,
+                markerByte: fileData[i+1]
+            });
+        }
+    }
+    
+    status.innerText += ` | Detectadas ${scanlines.length} líneas`;
+}
+
+function render() {
+    if (!fileData || scanlines.length === 0) return;
+
+    const lineWidth = parseInt(widthInput.value) || 90;
+    const offset = parseInt(offsetInput.value) || 6;
+    const flip = chkFlip.checked;
+
+    widthVal.innerText = lineWidth;
+    widthSlider.value = lineWidth;
+    offsetVal.innerText = offset;
+    offsetSlider.value = offset;
+
+    // Calcular dimensiones
+    const pixelWidth = Math.floor(lineWidth / 2); // Cada píxel = 2 bytes
+    const height = scanlines.length;
+
+    if (height <= 0 || pixelWidth <= 0) {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        return;
+    }
+
+    canvas.width = pixelWidth;
+    canvas.height = height;
+    
+    const imgData = ctx.createImageData(pixelWidth, height);
+    
+    for (let y = 0; y < height; y++) {
+        const lineStart = (y === 0) ? offset : (scanlines[y-1].markerOffset + 7);
+        const lineEnd = scanlines[y].markerOffset;
+        const lineData = fileData.slice(lineStart, lineEnd);
+        
+        for (let x = 0; x < pixelWidth; x++) {
+            const idx = x * 2;
+            if (idx + 1 >= lineData.length) continue;
+            
+            const val = lineData[idx] | (lineData[idx+1] << 8);
+            
+            // RGB565
+            let r = ((val >> 11) & 31) * 255 / 31;
+            let g = ((val >> 5) & 63) * 255 / 63;
+            let b = (val & 31) * 255 / 31;
+            
+            let drawY = flip ? (height - 1 - y) : y;
+            let pIdx = (drawY * pixelWidth + x) * 4;
+            
+            imgData.data[pIdx] = r;
+            imgData.data[pIdx+1] = g;
+            imgData.data[pIdx+2] = b;
+            imgData.data[pIdx+3] = 255;
+            
+            if (chkBlack.checked && val === 0x0000) imgData.data[pIdx+3] = 0;
+            if (chkWhite.checked && val === 0xFFFF) imgData.data[pIdx+3] = 0;
+        }
+    }
+    ctx.putImageData(imgData, 0, 0);
+}
+
+btnInfo.onclick = () => {
+    if (scanlines.length === 0) {
+        infoDiv.innerHTML = '❌ No se detectaron líneas';
+        infoDiv.style.display = 'block';
+        return;
+    }
+    
+    let html = `<strong>📊 Líneas Detectadas (${scanlines.length} total):</strong><br><br>`;
+    html += '<table style="width:100%; border-collapse:collapse;">';
+    html += '<tr style="background:#333;"><th style="padding:5px;">Línea</th><th>Offset</th><th>Byte XX</th><th>Longitud</th></tr>';
+    
+    for (let i = 0; i < Math.min(20, scanlines.length); i++) {
+        const lineStart = (i === 0) ? parseInt(offsetInput.value) : (scanlines[i-1].markerOffset + 7);
+        const lineEnd = scanlines[i].markerOffset;
+        const length = lineEnd - lineStart;
+        
+        html += `<tr style="border-bottom:1px solid #333;">`;
+        html += `<td style="padding:5px;">${i}</td>`;
+        html += `<td>0x${scanlines[i].markerOffset.toString(16)}</td>`;
+        html += `<td>0x${scanlines[i].markerByte.toString(16)}</td>`;
+        html += `<td>${length} bytes</td>`;
+        html += `</tr>`;
+    }
+    
+    if (scanlines.length > 20) {
+        html += `<tr><td colspan="4" style="padding:10px; text-align:center;">... y ${scanlines.length - 20} líneas más</td></tr>`;
+    }
+    
+    html += '</table>';
+    infoDiv.innerHTML = html;
+    infoDiv.style.display = 'block';
+};
+
+widthSlider.oninput = e => { widthInput.value = e.target.value; render(); };
+widthInput.oninput = e => { widthSlider.value = e.target.value; render(); };
+offsetSlider.oninput = e => { offsetInput.value = e.target.value; render(); };
+offsetInput.oninput = e => { offsetSlider.value = e.target.value; render(); };
+chkBlack.onchange = render;
+chkWhite.onchange = render;
+chkFlip.onchange = render;
+
+btnDownload.onclick = () => {
+    const a = document.createElement('a');
+    a.href = canvas.toDataURL('image/png');
+    a.download = `lionheart_scanline_${canvas.width}x${canvas.height}.png`;
+    a.click();
+};
+</script>
+</body>
+</html>

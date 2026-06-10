@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>🦁 Lionheart Unified Viewer - FRM16 & MDL16</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', sans-serif;
+            background: #1e1e1e;
+            color: #d4d4d4;
+            padding: 20px;
+            margin: 0;
+        }
+        h1 { color: #4ec9b0; }
+        .drop-zone {
+            border: 3px dashed #4ec9b0;
+            padding: 40px;
+            text-align: center;
+            border-radius: 10px;
+            cursor: pointer;
+            margin: 20px 0;
+            font-size: 18px;
+        }
+        .drop-zone:hover { background: #2d2d2d; }
+        .container {
+            background: #252526;
+            padding: 20px;
+            border-radius: 10px;
+            margin: 15px 0;
+        }
+        canvas {
+            image-rendering: pixelated;
+            border: 2px solid #444;
+            max-width: 100%;
+            background: repeating-conic-gradient(#333 0% 25%, #222 0% 50%) 50% / 20px 20px;
+        }
+        .controls {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin: 15px 0;
+        }
+        label { display: block; margin-bottom: 5px; color: #569cd6; }
+        input[type="number"], button, select {
+            padding: 8px;
+            border-radius: 5px;
+            border: 1px solid #3c3c3c;
+            background: #333;
+            color: #fff;
+            width: 100%;
+            box-sizing: border-box;
+        }
+        button {
+            background: #0e639c;
+            cursor: pointer;
+            font-weight: bold;
+            margin-top: 10px;
+        }
+        button:hover { background: #1177bb; }
+        .info {
+            background: #1e1e1e;
+            padding: 10px;
+            border-radius: 5px;
+            font-family: monospace;
+            font-size: 13px;
+            margin: 10px 0;
+        }
+        .section {
+            background: #2d2d2d;
+            padding: 15px;
+            border-radius: 8px;
+            margin: 15px 0;
+            border-left: 4px solid #4ec9b0;
+        }
+    </style>
+</head>
+<body>
+    <h1>🦁 Lionheart Unified Viewer</h1>
+    <p>Soporte completo para archivos <b>.FRM16</b> y <b>.MDL16</b></p>
+    
+    <div class="drop-zone" id="dropZone">
+        📂 Arrastra tu archivo .frm16 o .mdl16 aquí
+    </div>
+    <input type="file" id="fileInput" accept=".frm16,.mdl16" style="display:none">
+    
+    <div id="output"></div>
+
+    <script>
+        let fileData = null;
+        let fileName = '';
+        let fileType = '';
+        let sections = [];
+        
+        const dropZone = document.getElementById('dropZone');
+        const fileInput = document.getElementById('fileInput');
+        
+        dropZone.addEventListener('click', () => fileInput.click());
+        dropZone.addEventListener('dragover', (e) => { e.preventDefault(); dropZone.style.background = '#2d2d2d'; });
+        dropZone.addEventListener('dragleave', () => dropZone.style.background = '');
+        dropZone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            dropZone.style.background = '';
+            handleFile(e.dataTransfer.files[0]);
+        });
+        fileInput.addEventListener('change', (e) => handleFile(e.target.files[0]));
+        
+        function handleFile(file) {
+            if (!file) return;
+            fileName = file.name;
+            fileType = file.name.toLowerCase().endsWith('.mdl16') ? 'mdl16' : 'frm16';
+            
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                fileData = new Uint8Array(e.target.result);
+                document.getElementById('output').innerHTML = `
+                    <div class="info">
+                        📄 Archivo: <b>${file.name}</b><br>
+                        📏 Tamaño: <b>${fileData.length.toLocaleString()} bytes</b><br>
+                        🏷️ Tipo detectado: <b>${fileType.toUpperCase()}</b>
+                    </div>
+                `;
+                
+                if (fileType === 'frm16') {
+                    processFRM16();
+                } else {
+                    processMDL16();
+                }
+            };
+            reader.readAsArrayBuffer(file);
+        }
+        
+        function processFRM16() {
+            sections = [{
+                name: 'Imagen Principal',
+                offset: 64,
+                width: 779,
+                height: 330,
+                pitch: 779 * 2
+            }];
+            
+            renderSection(sections[0], 0);
+        }
+        
+        function processMDL16() {
+            sections = [];
+            const markers = ['idle POLY2D', 'POLY2D', 'Transparent Mask', 'idle shadow'];
+            
+            for (const marker of markers) {
+                const markerBytes = new TextEncoder().encode(marker);
+                let pos = 0;
+                
+                while (pos < fileData.length - markerBytes.length) {
+                    let markerPos = -1;
+                    for (let i = pos; i < fileData.length - markerBytes.length; i++) {
+                        let match = true;
+                        for (let j = 0; j < markerBytes.length; j++) {
+                            if (fileData[i + j] !== markerBytes[j]) {
+                                match = false;
+                                break;
+                            }
+                        }
+                        if (match) {
+                            markerPos = i;
+                            break;
+                        }
+                    }
+                    
+                    if (markerPos === -1) break;
+                    
+                    // Buscar firma mágica 01 32 10
+                    let magicPos = -1;
+                    for (let i = markerPos; i < markerPos + 500 && i < fileData.length - 3; i++) {
+                        if (fileData[i] === 0x01 && fileData[i + 1] === 0x32 && fileData[i + 2] === 0x10) {
+                            magicPos = i;
+                            break;
+                        }
+                    }
+                    
+                    if (magicPos !== -1) {
+                        const width = fileData[magicPos + 3] | (fileData[magicPos + 4] << 8);
+                        const height = fileData[magicPos + 5] | (fileData[magicPos + 6] << 8);
+                        const pitch = fileData[magicPos + 7] | (fileData[magicPos + 8] << 8);
+                        
+                        // Buscar tamaño de datos (44 00 00 00)
+                        let sizePos = -1;
+                        for (let i = magicPos; i < magicPos + 100 && i < fileData.length - 4; i++) {
+                            if (fileData[i] === 0x44 && fileData[i + 1] === 0x00 && 
+                                fileData[i + 2] === 0x00 && fileData[i + 3] === 0x00) {
+                                sizePos = i;
+                                break;
+                            }
+                        }
+                        
+                        let dataStart = magicPos + 20;
+                        if (sizePos !== -1) {
+                            dataStart = sizePos + 8;
+                        }
+                        
+                        sections.push({
+                            name: marker,
+                            offset: dataStart,
+                            width: width,
+                            height: height,
+                            pitch: pitch,
+                            markerPos: markerPos
+                        });
+                    }
+                    
+                    pos = markerPos + markerBytes.length;
+                }
+            }
+            
+            if (sections.length === 0) {
+                document.getElementById('output').innerHTML += `
+                    <div class="info" style="color:red;">
+                        ❌ No se encontraron secciones de imagen en este archivo MDL16
+                    </div>
+                `;
+                return;
+            }
+            
+            document.getElementById('output').innerHTML += `
+                <div class="info">
+                    ✅ Se encontraron <b>${sections.length}</b> secciones de imagen
+                </div>
+            `;
+            
+            sections.forEach((section, index) => {
+                renderSection(section, index);
+            });
+        }
+        
+        function renderSection(section, index) {
+            const container = document.createElement('div');
+            container.className = 'section';
+            container.innerHTML = `
+                <h3>🎨 ${section.name}</h3>
+                <div class="info">
+                    📐 Dimensiones: <b>${section.width} x ${section.height}</b><br>
+                    📏 Pitch: <b>${section.pitch} bytes</b><br>
+                    📍 Offset: <b>0x${section.offset.toString(16)}</b>
+                </div>
+                <div class="controls">
+                    <div>
+                        <label>Ancho:</label>
+                        <input type="number" id="width_${index}" value="${section.width}">
+                    </div>
+                    <div>
+                        <label>Alto:</label>
+                        <input type="number" id="height_${index}" value="${section.height}">
+                    </div>
+                    <div>
+                        <label>Pitch:</label>
+                        <input type="number" id="pitch_${index}" value="${section.pitch}">
+                    </div>
+                    <div>
+                        <label>Offset:</label>
+                        <input type="number" id="offset_${index}" value="${section.offset}">
+                    </div>
+                </div>
+                <button onclick="rerenderSection(${index})">🔄 Re-renderizar</button>
+                <canvas id="canvas_${index}"></canvas>
+                <br>
+                <button onclick="downloadSection(${index})">💾 Descargar PNG</button>
+            `;
+            
+            document.getElementById('output').appendChild(container);
+            
+            renderImage(section, index);
+        }
+        
+        function renderImage(section, index) {
+            const canvas = document.getElementById(`canvas_${index}`);
+            const width = section.width;
+            const height = section.height;
+            const pitch = section.pitch;
+            const offset = section.offset;
+            
+            canvas.width = width;
+            canvas.height = height;
+            const ctx = canvas.getContext('2d');
+            const imageData = ctx.createImageData(width, height);
+            
+            for (let y = 0; y < height; y++) {
+                for (let x = 0; x < width; x++) {
+                    const byteIdx = offset + (y * pitch) + (x * 2);
+                    const idx = (y * width + x) * 4;
+                    
+                    if (byteIdx + 1 < fileData.length) {
+                        const pixel = fileData[byteIdx] | (fileData[byteIdx + 1] << 8);
+                        
+                        imageData.data[idx]     = ((pixel >> 11) & 0x1F) * 255 / 31;
+                        imageData.data[idx + 1] = ((pixel >> 5) & 0x3F) * 255 / 63;
+                        imageData.data[idx + 2] = (pixel & 0x1F) * 255 / 31;
+                        imageData.data[idx + 3] = 255;
+                    }
+                }
+            }
+            
+            ctx.putImageData(imageData, 0, 0);
+        }
+        
+        function rerenderSection(index) {
+            const section = sections[index];
+            section.width = parseInt(document.getElementById(`width_${index}`).value);
+            section.height = parseInt(document.getElementById(`height_${index}`).value);
+            section.pitch = parseInt(document.getElementById(`pitch_${index}`).value);
+            section.offset = parseInt(document.getElementById(`offset_${index}`).value);
+            
+            renderImage(section, index);
+        }
+        
+        function downloadSection(index) {
+            const canvas = document.getElementById(`canvas_${index}`);
+            const link = document.createElement('a');
+            link.download = `${fileName.replace(/\.(frm16|mdl16)$/i, '')}_${sections[index].name.replace(/\s+/g, '_')}.png`;
+            link.href = canvas.toDataURL();
+            link.click();
+        }
+    </script>
+</body>
+</html>

@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>🦁 Lionheart Advanced Viewer</title>
+<style>
+body { font-family: Arial; background:#1e1e1e; color:#ddd; padding:20px; }
+.drop { border:2px dashed #4ec9b0; padding:30px; text-align:center; cursor:pointer; }
+canvas { border:1px solid #555; margin-top:10px; image-rendering: pixelated; }
+button { margin:5px; padding:5px 10px; }
+</style>
+</head>
+<body>
+
+<h1>🦁 Lionheart Advanced Viewer</h1>
+<div class="drop" id="drop">Arrastra archivo</div>
+<input type="file" id="file" hidden>
+<div id="out"></div>
+
+<script>
+let fileData;
+let found = [];
+
+document.getElementById('drop').onclick = () => file.click();
+document.getElementById('file').onchange = e => load(e.target.files[0]);
+
+function load(file){
+    const r = new FileReader();
+    r.onload = e=>{
+        fileData = new Uint8Array(e.target.result);
+        document.getElementById('out').innerHTML='';
+        found = [];
+
+        if(file.name.endsWith('.frm16')) parseFRM16(0);
+        else scanMDL16();
+    };
+    r.readAsArrayBuffer(file);
+}
+
+function readU16(o){ return fileData[o] | (fileData[o+1]<<8); }
+
+function parseFRM16(offset){
+
+    if(fileData[offset]!==0x01 || fileData[offset+1]!==0x32 || fileData[offset+2]!==0x10) return;
+
+    let w = readU16(offset+3);
+    let h = readU16(offset+5);
+    let pitch = readU16(offset+7);
+
+    if(w<=0 || h<=0 || w>4096 || h>4096) return;
+
+    let dataOffset = offset+16;
+
+    let sizeEstimate = h * pitch + 32;
+
+    found.push({
+        offset,
+        size: sizeEstimate,
+        width: w,
+        height: h,
+        pitch: pitch
+    });
+
+    drawImage(found.length-1);
+}
+
+function scanMDL16(){
+    for(let i=0;i<fileData.length-10;i++){
+        if(fileData[i]===0x01 && fileData[i+1]===0x32 && fileData[i+2]===0x10){
+            parseFRM16(i);
+        }
+    }
+}
+
+function drawImage(index){
+
+    let s = found[index];
+
+    let canvas = document.createElement('canvas');
+    canvas.width = s.width;
+    canvas.height = s.height;
+
+    let ctx = canvas.getContext('2d');
+    let img = ctx.createImageData(s.width, s.height);
+
+    for(let y=0;y<s.height;y++){
+        for(let x=0;x<s.width;x++){
+
+            let p = s.offset + 16 + y*s.pitch + x*2;
+            if(p+1>=fileData.length) continue;
+
+            let px = fileData[p] | (fileData[p+1]<<8);
+
+            let i = (y*s.width+x)*4;
+
+            img.data[i]   = ((px>>11)&31)*255/31;
+            img.data[i+1] = ((px>>5)&63)*255/63;
+            img.data[i+2] = (px&31)*255/31;
+            img.data[i+3] = 255;
+        }
+    }
+
+    ctx.putImageData(img,0,0);
+
+    let div = document.createElement('div');
+    div.innerHTML = `
+        📍 Offset 0x${s.offset.toString(16)} (${s.width}x${s.height})<br>
+    `;
+
+    // BOTÓN PNG
+    let btnPNG = document.createElement('button');
+    btnPNG.innerText = "💾 Descargar PNG";
+    btnPNG.onclick = ()=>{
+        let a = document.createElement('a');
+        a.href = canvas.toDataURL();
+        a.download = `img_${index}.png`;
+        a.click();
+    };
+
+    // BOTÓN FRM16
+    let btnFRM = document.createElement('button');
+    btnFRM.innerText = "📦 Extraer FRM16";
+    btnFRM.onclick = ()=>{
+        let blob = new Blob(
+            [fileData.slice(s.offset, s.offset + s.size)],
+            {type:"application/octet-stream"}
+        );
+        let a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = `extract_${index}.frm16`;
+        a.click();
+    };
+
+    div.appendChild(canvas);
+    div.appendChild(document.createElement('br'));
+    div.appendChild(btnPNG);
+    div.appendChild(btnFRM);
+
+    document.getElementById('out').appendChild(div);
+}
+</script>
+
+</body>
+</html>
