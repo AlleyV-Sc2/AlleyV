@@ -1,0 +1,1 @@
+Tests of file converters for the game Lionheart: Legacy of the Crusader, created from several AI code, the main tool renamed with the name Advance_Vx is the most advanced, it manages to extract the image but with structuring problems, in short it is in alpha phase, but for the moment it works.
